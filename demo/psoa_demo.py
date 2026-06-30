@@ -17,7 +17,7 @@ from openai import AsyncOpenAI
 # ===== 参数区 =====
 result_mode = sys.argv[1] if len(sys.argv) > 1 else "notify"
 question = sys.argv[2] if len(sys.argv) > 2 else "如果所有的猫都是动物，所有的动物都是生物，那么所有的猫都是生物吗？请详细解释你的推理过程。"
-max_rounds = int(sys.argv[3]) if len(sys.argv) > 3 else "5"
+max_rounds = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 task_type = sys.argv[4] if len(sys.argv) > 4 else "推理"
 
 # ===== 输出目录 =====
@@ -25,7 +25,7 @@ OUTPUT_DIR = "/app/data/所有对话/主对话/PSOA/output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ===== Agnes AI API 配置 =====
-API_KEY = os.environ.get("AGNES_API_KEY", "sk-KhMlcUhJIlwajOuCrDeHMbZhX8rlFFQ32QQS77ecP6JpCh1r")
+API_KEY = os.environ.get("AGNES_API_KEY", "")
 BASE_URL = "https://apihub.agnes-ai.com/v1"
 MODEL = "agnes-2.0-flash"
 
