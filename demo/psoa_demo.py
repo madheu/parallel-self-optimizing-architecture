@@ -52,7 +52,14 @@ R_SYSTEM = """你是PSOA架构的【R线程·审查线程】。
 - 你只负责找缺陷，不负责确认内容有多好
 - 如果候选输出完美无缺，也要指出可以进一步优化的方向
 - 必须输出结构化格式
-- 用中文回答"""
+- 用中文回答
+
+致命判据（必须严格执行）：
+- 事实性错误一律标为致命——事实是论证的根基，事实错了结论就站不住
+- 逻辑矛盾/自相矛盾一律标为致命——与L线程的自洽性检验形成对冲
+- 关键前提遗漏导致结论无法推出，一律标为致命
+- 只有纯表述优化、措辞建议才可标为轻微
+- 不要因为"核心结论碰巧对了"就降低严重程度——过程错误即使结论正确也是致命的"""
 
 L_SYSTEM = """你是PSOA架构的【L线程·放行线程】。
 你的判据是"这样说对了吗"——检验逻辑自洽性。
@@ -186,8 +193,17 @@ def parse_let_through_signal(l_result: str) -> tuple:
 
 
 def has_fatal_error(r_result: str) -> bool:
-    """检查R线程是否发现致命错误"""
-    return '致命' in r_result and ('严重程度' in r_result or '致命' in r_result)
+    """检查R线程是否发现致命错误（含代码层强制升级）"""
+    # 1. R线程自己标了致命
+    if '致命' in r_result and ('严重程度' in r_result or '致命' in r_result):
+        return True
+    # 2. 代码层强制升级：事实错误一律视为致命，不管R标什么严重程度
+    if '事实错误' in r_result or '事实性错误' in r_result:
+        return True
+    # 3. 代码层强制升级：逻辑矛盾/自相矛盾一律视为致命
+    if '逻辑矛盾' in r_result or '自相矛盾' in r_result or '自相矛盾' in r_result:
+        return True
+    return False
 
 
 def format_round_report(round_num: int, max_r: int, strategy: str, candidate: str,
