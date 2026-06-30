@@ -1,3 +1,4 @@
+
 # PSOA: Parallel Self-Optimizing Architecture
 
 > 一种让大语言模型"自己审自己、自己改自己、自己决定什么时候改完了"的四线程并行框架。
@@ -101,3 +102,5 @@ PSOA/
 ## License
 
 MIT
+
+这是我跟glm聊天所得，非严谨学术，欢迎来喷。
