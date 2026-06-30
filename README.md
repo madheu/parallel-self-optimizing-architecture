@@ -1,5 +1,8 @@
-
 # PSOA: Parallel Self-Optimizing Architecture
+
+<p align="center">
+  <img src="assets/banner.jpg" alt="PSOA Banner" width="800">
+</p>
 
 > 一种让大语言模型"自己审自己、自己改自己、自己决定什么时候改完了"的四线程并行框架。
 
@@ -43,6 +46,13 @@ PSOA 把生成、审查、放行、迭代四个功能拆成**四个独立并行�
 
 ## 架构图
 
+<p align="center">
+  <img src="assets/architecture.jpg" alt="PSOA Architecture" width="500">
+</p>
+
+<details>
+<summary>文字版架构图</summary>
+
 ```
 ┌──────────────────────────────────────────────────┐
 │              人类反馈（元指令锚定）                  │
@@ -67,6 +77,8 @@ PSOA 把生成、审查、放行、迭代四个功能拆成**四个独立并行�
 │        生成第t+1代实例                             │
 └──────────────────────────────────────────────────┘
 ```
+
+</details>
 
 ## 与现有方法的关系
 
@@ -102,5 +114,3 @@ PSOA/
 ## License
 
 MIT
-
-这是我跟glm聊天所得，非严谨学术，欢迎来喷。
