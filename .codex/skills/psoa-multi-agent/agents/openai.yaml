@@ -1,0 +1,9 @@
+﻿{
+  \"display_name\": \"PSOA Multi-Agent\",
+  \"short_description\": \"PSOA 多 Agent 架构理解与维护\",
+  \"default_prompt\": \"理解并维护 PSOA 三线程协作系统\",
+  \"icons\": {
+    \"small\": \"assets/psoa-small.svg\",
+    \"large\": \"assets/psoa-large.svg\"
+  }
+}
