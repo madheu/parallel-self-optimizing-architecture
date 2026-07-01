@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 PSOA v2 - 结构化升级版
 基于 v1 原型 + ChatGPT/Grok 评审意见改进：
@@ -29,7 +29,13 @@ class Config:
     TASK_TYPE = sys.argv[4] if len(sys.argv) > 4 else "推理"
     
     OUTPUT_DIR = Path("/app/data/所有对话/主对话/PSOA/output")
-    API_KEY = os.environ.get("AGNES_API_KEY", "sk-KhMlcUhJIlwajOuCrDeHMbZhX8rlFFQ32QQS77ecP6JpCh1r")
+    _API_KEY_RAW: str = os.environ.get("AGNES_API_KEY")
+
+    @classmethod
+    def API_KEY(cls) -> str:
+        if not cls._API_KEY_RAW:
+            raise RuntimeError("AGNES_API_KEY environment variable is required. Set it before running.")
+        return cls._API_KEY_RAW
     BASE_URL = "https://apihub.agnes-ai.com/v1"
     MODEL = "agnes-2.0-flash"
     
@@ -39,8 +45,12 @@ class Config:
     REVIEW_SUMMARY_MAX = 800
 
 
-Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-client = AsyncOpenAI(api_key=Config.API_KEY, base_url=Config.BASE_URL)
+try:
+    Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    Config.OUTPUT_DIR = Path("psoa_output")
+    Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+client = AsyncOpenAI(api_key=Config.API_KEY(), base_url=Config.BASE_URL)
 
 
 # ==================== 升级后的 System Prompts ====================
@@ -122,7 +132,13 @@ I_SYSTEM = """你是PSOA架构的【I线程·代际蒸馏引擎】。
 # ==================== 工具函数 ====================
 
 async def call_llm(system: str, user: str, temperature: float = 0.7, retries: int = 2) -> str:
-    """调用 Agnes AI API，带重试"""
+    """调用 LLM API，带重试，返回文本内容"""
+    (content, _) = await call_llm_detailed(system, user, temperature, retries)
+    return content
+
+
+async def call_llm_detailed(system: str, user: str, temperature: float = 0.7, retries: int = 2):
+    """调用 LLM API，带重试，返回 (content, usage_dict)"""
     for attempt in range(retries + 1):
         try:
             response = await client.chat.completions.create(
@@ -134,15 +150,20 @@ async def call_llm(system: str, user: str, temperature: float = 0.7, retries: in
                 temperature=temperature,
                 max_tokens=4000,
             )
-            return response.choices[0].message.content.strip()
+            content = response.choices[0].message.content.strip()
+            usage = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) if response.usage else 0,
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0) if response.usage else 0,
+            }
+            return content, usage
         except APIError as e:
             if attempt == retries:
-                return f'[API Error: {e}]'
+                return f'[API Error: {e}]', {"prompt_tokens": 0, "completion_tokens": 0}
             await asyncio.sleep(1 * (attempt + 1))
 
 
-def extract_json(text: str) -> Dict:
-    """从文本中提取JSON，容错处理"""
+def extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """从文本中提取JSON，容错处理。解析失败返回None并在stderr打印警告。"""
     try:
         start = text.find('{')
         end = text.rfind('}') + 1
@@ -151,13 +172,14 @@ def extract_json(text: str) -> Dict:
             return json.loads(json_str)
     except json.JSONDecodeError:
         pass
-    return {}
+    print(f"[WARN] extract_json: Failed to parse JSON from LLM output (length={len(text)}), returning None")
+    return None
 
 
-def parse_r_result(raw: str) -> Dict:
+def parse_r_result(raw: str) -> Dict[str, Any]:
     """解析R线程输出，兼容JSON和纯文本"""
     j = extract_json(raw)
-    if j:
+    if j is not None:
         return j
     # 降级：纯文本解析
     errors = []
@@ -176,10 +198,10 @@ def parse_r_result(raw: str) -> Dict:
     }
 
 
-def parse_l_result(raw: str) -> Dict:
+def parse_l_result(raw: str) -> Dict[str, Any]:
     """解析L线程输出，兼容JSON和纯文本"""
     j = extract_json(raw)
-    if j:
+    if j is not None:
         return j
     # 降级：从纯文本中提取放行信号
     signal = 0
@@ -198,7 +220,7 @@ def parse_l_result(raw: str) -> Dict:
     }
 
 
-def has_fatal_error(r_parsed: Dict) -> bool:
+def has_fatal_error(r_parsed: Dict[str, Any]) -> bool:
     """检查R线程是否发现致命错误（代码层+JSON层双重判定）"""
     errors = r_parsed.get("errors", [])
     for err in errors:
@@ -220,7 +242,18 @@ def has_fatal_error(r_parsed: Dict) -> bool:
     return False
 
 
-def compress_review_history(history_entries: list, window: int = Config.REVIEW_WINDOW) -> str:
+def candidate_similarity(a: str, b: str) -> float:
+    """计算两个候选答案的token级Jaccard相似度，用于收敛稳定性判断。"""
+    tokens_a = set(a.split())
+    tokens_b = set(b.split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+def compress_review_history(history_entries: list[str], window: int = Config.REVIEW_WINDOW) -> str:
     """滑动窗口 + 压缩：只保留最近N轮审查历史，超出部分压缩为一行摘要"""
     if len(history_entries) <= window:
         return "\n".join(history_entries)
@@ -271,7 +304,7 @@ async def r_thread(candidate: str) -> str:
     return await call_llm(R_SYSTEM, user_prompt, temperature=0.3)
 
 
-async def l_thread(candidate: str, question: str, r_parsed: Dict) -> str:
+async def l_thread(candidate: str, question: str, r_parsed: Dict[str, Any]) -> str:
     """L线程：逻辑自洽性放行检验"""
     # 构建R线程致命信息，让L正面回应
     fatal_errors = []
@@ -297,6 +330,30 @@ async def l_thread(candidate: str, question: str, r_parsed: Dict) -> str:
     return await call_llm(L_SYSTEM, user_prompt, temperature=0.2)
 
 
+async def l_thread_raw(candidate: str, question: str, r_raw: str) -> str:
+    """L线程原始版：接收R的原始文本，不做预解析，以便与R真正并发。"""
+    fatal_errors = []
+    for ln in r_raw.split("\n"):
+        if "致命" in ln:
+            fatal_errors.append(ln.strip())
+    
+    r_fatal_info = ""
+    if fatal_errors:
+        r_fatal_info = "\n\n\u26a0\ufe0f R线程标记了致命错误（你必须在fatal_reconciliation字段中正面回应）：\n"
+        for fe in fatal_errors[:3]:
+            r_fatal_info += f"- {fe}\n"
+        r_fatal_info += "如果你认为R的致命判断不成立，请在fatal_reconciliation中给出理由；如果成立，let_through必须为0。"
+    
+    user_prompt = f"""原始问题：{question}
+
+候选输出：
+{candidate}
+{r_fatal_info}
+
+请检验此候选输出的逻辑自洽性，输出严格JSON格式。"""
+    return await call_llm(L_SYSTEM, user_prompt, temperature=0.2)
+
+
 async def i_thread(question: str, strategy: str, candidate: str, 
                    r_result: str, l_result: str, round_num: int) -> Dict:
     """I线程：代际蒸馏引擎"""
@@ -305,21 +362,21 @@ async def i_thread(question: str, strategy: str, candidate: str,
 当前代（第{round_num}代）策略提示：
 {strategy}
 
-本轮G线程候选输出：
-{candidate}
+本轮G线程候选输出（摘要）：
+{candidate[:800]}
 
-本轮R线程审查意见：
-{r_result}
+本轮R线程审查摘要：
+{r_summary}
 
-本轮L线程放行判断：
-{l_result}
+本轮L线程放行判断摘要：
+{l_summary}
 
 轮次：{round_num}
 
 请执行代际蒸馏，输出严格JSON格式。"""
     result = await call_llm(I_SYSTEM, user_prompt, temperature=0.5)
     parsed = extract_json(result)
-    if not parsed:
+    if parsed is None:
         parsed = {"round_experience": result[:200], "strategy_updates": {"retained": [], "modified": [], "new": []}, "next_strategy": strategy}
     return parsed
 
@@ -390,9 +447,150 @@ def format_round_report(round_num: int, max_r: int, strategy: str, candidate: st
     return report
 
 
+# ==================== 核心单次运行函数（供 Benchmark 调用） ====================
+
+async def run_psoa_single(question: str, task_type: str = "推理", max_rounds: int = 3, temperature: float = 0.3):
+    """
+    干净的单次 PSOA 运行，无日志/无提交。
+    返回: (final_answer, converged, total_time, total_input_tokens, total_output_tokens, actual_rounds)
+    """
+    strategy = f"""【第0代初始策略】
+任务类型: {task_type}
+方法论:
+1. 仔细分析问题，识别核心前提与结论
+2. 逐步推理，确保每一步都有充分依据
+3. 验证结论是否由前提逻辑推出
+4. 检查是否有遗漏的中间环节
+5. 用清晰的语言组织答案"""
+
+    review_entries = []
+    round_signals = []
+    final_answer = ""
+    converged = False
+    last_passing_answer = ""
+    total_input_tokens = 0
+    total_output_tokens = 0
+
+    start_time = time.time()
+
+    for round_num in range(1, max_rounds + 1):
+        # G 线程
+        g_user = f"""任务：{question}
+
+当前策略提示：
+{strategy}
+
+审查历史（请充分吸收修正建议）：
+{compress_review_history(review_entries) if review_entries else '（首轮，暂无审查历史）'}
+
+请根据策略提示生成候选输出。"""
+        candidate_raw = await call_llm_detailed(G_SYSTEM, g_user, temperature=temperature)
+        candidate = candidate_raw[0]
+        g_usage = candidate_raw[1]
+        total_input_tokens += g_usage.get("prompt_tokens", 0)
+        total_output_tokens += g_usage.get("completion_tokens", 0)
+
+        # R 线程
+        r_user = f"""请对以下候选输出进行纯负反馈审查：
+
+---
+{candidate}
+---
+
+请输出严格的JSON格式审查结果。"""
+        r_raw = await call_llm_detailed(R_SYSTEM, r_user, temperature=temperature)
+        r_text = r_raw[0]
+        r_usage = r_raw[1]
+        total_input_tokens += r_usage.get("prompt_tokens", 0)
+        total_output_tokens += r_usage.get("completion_tokens", 0)
+        r_parsed = parse_r_result(r_text)
+
+        # L 线程（传入R的致命信息）
+        fatal_errors = []
+        for err in r_parsed.get("errors", []):
+            if err.get("severity") in ("致命",):
+                fatal_errors.append(f"- [{err.get('type')}] {err.get('description')}")
+        r_fatal_info = ""
+        if fatal_errors:
+            r_fatal_info = f"""
+
+⚠️ R线程标记了以下致命错误（你必须在fatal_reconciliation字段中正面回应）：
+{chr(10).join(fatal_errors)}
+如果你认为R的致命判断不成立，请在fatal_reconciliation中给出理由；如果成立，let_through必须为0。"""
+        l_user = f"""原始问题：{question}
+
+候选输出：
+{candidate}{r_fatal_info}
+
+请检验此候选输出的逻辑自洽性，输出严格JSON格式。"""
+        l_raw = await call_llm_detailed(L_SYSTEM, l_user, temperature=temperature)
+        l_text = l_raw[0]
+        l_usage = l_raw[1]
+        total_input_tokens += l_usage.get("prompt_tokens", 0)
+        total_output_tokens += l_usage.get("completion_tokens", 0)
+        l_parsed = parse_l_result(l_text)
+
+        signal = l_parsed.get("let_through", 0)
+        fatal = has_fatal_error(r_parsed)
+
+        # I 线程
+        i_user = f"""任务：{question}
+
+当前代（第{round_num}代）策略提示：
+{strategy}
+
+本轮G线程候选输出：
+{candidate}
+
+本轮R线程审查意见：
+{r_text}
+
+本轮L线程放行判断：
+{l_text}
+
+轮次：{round_num}
+
+请执行代际蒸馏，输出严格JSON格式。"""
+        i_raw = await call_llm_detailed(I_SYSTEM, i_user, temperature=temperature)
+        i_text = i_raw[0]
+        i_usage = i_raw[1]
+        total_input_tokens += i_usage.get("prompt_tokens", 0)
+        total_output_tokens += i_usage.get("completion_tokens", 0)
+        i_parsed = extract_json(i_text)
+        if i_parsed is None:
+            i_parsed = {"round_experience": i_text[:200], "strategy_updates": {"retained": [], "modified": [], "new": []}, "next_strategy": strategy}
+
+        # 更新策略
+        new_strategy = i_parsed.get("next_strategy", strategy)
+        if len(new_strategy) < 50:
+            new_strategy = strategy
+
+        r_entry = f"第{round_num}轮: " + json.dumps(r_parsed.get("errors", []), ensure_ascii=False)[:Config.REVIEW_SUMMARY_MAX]
+        review_entries.append(r_entry)
+
+        round_signals.append(signal)
+
+        # 收敛判断
+        if signal == 1 and not fatal:
+            final_answer = candidate
+            converged = True
+            break
+        else:
+            strategy = new_strategy
+
+    total_time = time.time() - start_time
+    actual_rounds = len(round_signals)
+
+    if not converged and round_signals:
+        # 取最后一轮输出作为答案
+        final_answer = candidate
+
+    return final_answer, converged, total_time, total_input_tokens, total_output_tokens, actual_rounds
+
+
 # ==================== 主逻辑 ====================
 
-async def main():
+async def main() -> None:
     print(f"[PSOA v2] result_mode={Config.RESULT_MODE}, question={Config.QUESTION[:50]}..., max_rounds={Config.MAX_ROUNDS}, task_type={Config.TASK_TYPE}")
 
     # 初始策略
@@ -411,6 +609,7 @@ async def main():
     experience_log = []
     final_answer = ""
     converged = False
+    last_passing_answer = ""
 
     start_time = time.time()
 
@@ -423,15 +622,15 @@ async def main():
         candidate = await g_thread(Config.QUESTION, strategy, compress_review_history(review_entries))
         print(f"  [G] 完成, len={len(candidate)}")
 
-        # R线程
+        # R线程：审查候选输出
         print(f"  [R] 审查中...")
         r_raw = await r_thread(candidate)
         r_parsed = parse_r_result(r_raw)
         print(f"  [R] 完成, errors={len(r_parsed.get('errors', []))}")
 
-        # L线程（传入R的解析结果，让L正面回应致命错误）
+        # L线程：传入R的原始文本（不做Python端JSON预解析），减少依赖
         print(f"  [L] 放行判断中...")
-        l_raw = await l_thread(candidate, Config.QUESTION, r_parsed)
+        l_raw = await l_thread_raw(candidate, Config.QUESTION, r_raw)
         l_parsed = parse_l_result(l_raw)
         print(f"  [L] 完成, let_through={l_parsed.get('let_through', 0)}")
 
@@ -443,7 +642,15 @@ async def main():
 
         # I线程
         print(f"  [I] 代际蒸馏中...")
-        i_parsed = await i_thread(Config.QUESTION, strategy, candidate, r_raw, l_raw, round_num)
+        # I线程：传入结构化摘要而非原始文本，节省token
+        r_summary = json.dumps(r_parsed.get("errors", []), ensure_ascii=False, indent=2)[:600]
+        l_summary = json.dumps({k: v for k, v in l_parsed.items() if k != "fatal_reconciliation"}, ensure_ascii=False, indent=2)[:400]
+        fr = l_parsed.get("fatal_reconciliation", {})
+        if isinstance(fr, dict):
+            l_summary += f"\n致命对冲: {fr.get('comment', '')}"
+        else:
+            l_summary += f"\n致命对冲: {fr}"
+        i_parsed = await i_thread(Config.QUESTION, strategy, candidate, r_summary, l_summary, round_num)
         print(f"  [I] 完成")
 
         # 更新策略
@@ -474,12 +681,24 @@ async def main():
         all_reports.append(report)
         print(report)
 
-        # 收敛判断
+        # 收敛判断：L放行 + 无致命错误 + 答案稳定性（与上一轮放行答案相似度>0.85）
         if signal == 1 and not fatal:
-            final_answer = candidate
-            converged = True
-            print(f">>> ✓ 第 {round_num} 轮收敛！L放行 + 无致命错误。")
-            break
+            if converged is False:  # First time we see a passing signal
+                final_answer = candidate
+                last_passing_answer = candidate
+                converged = True
+                print(f">>> ✓ 第 {round_num} 轮首次放行，记录基准答案。")
+            else:
+                # Check stability against last passing answer
+                sim = candidate_similarity(last_passing_answer, candidate)
+                if sim > 0.85:
+                    final_answer = candidate
+                    print(f">>> ✓ 第 {round_num} 轮收敛！L放行 + 无致命错误 + 答案稳定(相似度={sim:.2f})。")
+                    break
+                else:
+                    print(f">>> ⚠ 第 {round_num} 轮放行但答案变化较大(相似度={sim:.2f})，继续进化...")
+                    last_passing_answer = candidate
+                    strategy = new_strategy
         else:
             strategy = new_strategy
             reason = "R标致命" if fatal else "L不放行"
