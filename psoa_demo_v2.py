@@ -355,7 +355,7 @@ async def l_thread_raw(candidate: str, question: str, r_raw: str) -> str:
 
 
 async def i_thread(question: str, strategy: str, candidate: str, 
-                   r_result: str, l_result: str, round_num: int) -> Dict:
+                   r_summary: str, l_summary: str, round_num: int) -> Dict:
     """I线程：代际蒸馏引擎"""
     user_prompt = f"""任务：{question}
 
