@@ -1,0 +1,2 @@
+[permissions]
+allow = ["Bash(cd /e/psoa && python -c \"import py_compile; py_compile.compile('benchmark_deepseek_10q.py', doraise=True)\" && echo \"SYNTAX OK\")"]

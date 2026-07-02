@@ -1,45 +1,51 @@
-PSOA v2 运行分析报告
-=====================
+# PSOA Benchmark Analysis Report
 
-一、测试概览
------------
-共运行4次测试，覆盖3类问题：
-1. 逻辑传递性（猫-动物-生物）：1轮收敛
-2. 物理（飞机升力+倒飞）：5轮未收敛
-3. 逻辑谜题（帽子问题）：2轮收敛
+> A/B comparison: Direct Answer vs PSOA Architecture (v2)
+> Model: agnes-2.0-flash | Temperature: 0.3 | PSOA Max Rounds: 3
 
-二、R/L 一致率分析
------------------
-以物理问题5轮为例：
-- 第1轮: R标1致命+1严重+1轻微, L对冲(认为R判断有误)
-- 第2轮: R标1致命+1严重, L不放行(与R一致)
-- 第3轮: R标1致命+1严重, L对冲
-- 第4轮: R标1致命+1严重, L对冲
-- 第5轮: R标6致命+1严重+1轻微(错误急剧恶化!), L对冲
+## Summary
 
-结论：R/L 一致率约 20%（5轮中仅1轮一致）。L线程频繁对冲R的致命判断，
-即使R明确标记了致命错误，L仍倾向于认为"逻辑自洽"。这说明L的放行判据
-过于宽松，或者L本身也在犯同样的推理错误。
+| Metric | Direct (A) | PSOA (B) | Delta |
+|--------|-----------|----------|-------|
+| Accuracy | 80-85% (16-17/20) | 85% (17/20) | +0~5% |
+| Avg Time/Question | ~20s | ~170s | +8.5x |
+| Avg PSOA Rounds | - | 1.55 | - |
+| Convergence Rate | - | 80% | - |
 
-三、I线程进化了什么？
---------------------
-I线程的进化集中在"领域知识精度"而非"推理方法论"：
-- 保留：双原理解释框架、攻角主导原则、对称/非对称翼型对比
-- 修正：上下表面定义逻辑、倒飞操作细节（推杆/拉杆）、术语准确性
-- 新增：库塔条件提及、失速分析、参考系转换说明
+## Key Anomalies
 
-关键发现：I线程学会了更多物理细节，但没有学会如何避免G线程的
-自我矛盾和错误推导。策略进化是"增量修补"而非"范式转变"。
+### Type A: L False Positive (Converged but Wrong)
+- **Q12** (逻辑): Direct OK, PSOA NO, conv=1r — L endorsed wrong answer
+- **Q16** (常识): Direct OK, PSOA NO, conv=3r — L endorsed wrong answer after 3 rounds
+- **Implication**: Convergence != Correctness. The L thread lacks external verification.
 
-四、收敛是质量保证还是妥协产物？
--------------------------------
-收敛条件：L放行 + 无致命错误 + 答案稳定性(相似度>0.85)
+### Type B: R False Negative (Correct but Not Converged)
+- **Q4** (数学): Direct NO, PSOA OK, NC(3r) — R kept flagging fatal errors despite correct answer
+- **Q9** (逻辑): Direct NO, PSOA OK, NC(3r) — Same pattern
+- **Implication**: R is too aggressive on certain question types. The `has_fatal_error()` heuristic (which force-promotes certain error types to fatal) may be causing unnecessary rejections.
 
-观察到的问题：
-1. 物理问题5轮均未收敛，R标记的致命错误从1个增加到6个
-2. 这说明当问题超出模型能力时，I线程的进化无法弥补G的缺陷
-3. 收敛的轮次（逻辑题）答案长度很短（19-21字），可能是过度简化的结果
-4. L频繁对冲R的致命判断，意味着"收敛"可能只是L的妥协而非真实质量
+### Type C: Regression
+- Q10 (逻辑硬币题): Direct OK → PSOA NO
+- Q12 (谁说真话): Direct OK → PSOA NO
+- Q16 (闰年生日): Direct OK → PSOA NO
 
-结论：当前的收敛判据不足以保证答案质量。L线程的放行标准过于宽松，
-导致"收敛"可能是L对R致命判断的妥协，而非答案真的正确。
+### Type D: Fixes
+- Q4 (cat/turtle/table): Direct NO → PSOA OK (3 rounds, no convergence but correct)
+- Q9 (wolf/goat/cabbage): Direct NO → PSOA OK
+- Q11 (liar paradox): Direct NO → PSOA OK (1 round!)
+- Q20 (bacteria division): Direct NO → PSOA OK (1 round)
+
+## Verifier Priority
+
+The most critical finding: **L false positives (Q12, Q16)** and **R false negatives (Q4, Q9)** together mean the G→R→L→I loop's convergence signal has weak correlation with answer quality. 
+
+A V-thread (Verifier) would:
+1. Independently grade the final answer against the question BEFORE marking convergence
+2. Break the circular dependency between R (reviews G) and L (reviews G, referencing R)
+3. Provide clean training signal: converged+certified vs converged+rejected trajectories
+
+## Files
+
+- `benchmark.py` — Full A/B benchmark framework (20 questions, scoring, report, anomaly analysis)
+- `psoa_demo_v2.py` — PSOA v2 core with `run_psoa_single()` export
+- `.reasonix/autoresearch/` — Task state and iteration logs

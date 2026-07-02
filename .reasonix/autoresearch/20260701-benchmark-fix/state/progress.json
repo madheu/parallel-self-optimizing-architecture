@@ -1,0 +1,1 @@
+{"status":"in_progress","steps":[{"name":"分析 benchmark.py 数据缺口","status":"completed","done":true},{"name":"修复 token/time 追踪 + 增加异常分析","status":"completed","done":true},{"name":"验证语法","status":"completed","done":true},{"name":"全量重跑获取完整报告","status":"in_progress","done":false},{"name":"分析异常并产出 findings","status":"pending","done":false}],"stale_count":0,"pivot_count":0}

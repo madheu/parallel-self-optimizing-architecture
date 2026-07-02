@@ -1,0 +1,24 @@
+{
+  "total": 2,
+  "passed": 0,
+  "rejected": 0,
+  "reviewed": 2,
+  "pass_rate": 0.0,
+  "avg_scores": {
+    "schema": 0.0,
+    "tool": 0.0,
+    "llm": 0.0
+  },
+  "by_round": {
+    "1": {
+      "pass": 0,
+      "reject": 0,
+      "review": 1
+    },
+    "2": {
+      "pass": 0,
+      "reject": 0,
+      "review": 1
+    }
+  }
+}
